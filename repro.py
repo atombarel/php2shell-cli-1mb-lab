@@ -16,7 +16,7 @@ from pathlib import Path
 
 BOUNDARY = b"C" * 10
 EXPECTED = {
-    "a1": (1_027_886, "1690f6121ffad2ee2aed7d88d2df963f9b8940f3b8e584e57d3e16971e39efd0"),
+    "a1": (355_594, "a86ed7ef319f5303a259faeecc8addf11110184b4fc9171c520e891ab255fd68"),
     "b1": (520_552, "2466c650a7139a28f564e5fdcc75050fec1ef855bd6e31df7a5d653e773db6fb"),
 }
 
@@ -43,12 +43,6 @@ def make_a1() -> bytes:
         body += b"--" + BOUNDARY + b"\r\nContent-Disposition: form-data; name=\"" + name
         body += b"\"; filename=\"" + (b"A" if i < 2 else b"") + b"\"\r\n"
         body += b"Content-Type: " + ctype + b"\r\n\r\n"
-    for i in range(14):
-        body += field(f"f{i:04d}".encode().ljust(103, b"x"), b"v" * 8)
-    for i in range(73):
-        body += field(f"b{i:04d}".encode(), b"B" * 8000)
-    for i in range(20):
-        body += field(f"u{i:02d}".encode(), b"U" * 4000)
     body += b"--" + BOUNDARY + b"--\r\n"
     return bytes(body)
 

@@ -2,7 +2,7 @@
 
 This repository reproduces a two-request crash in PHP's built-in CLI web server using the session upload-progress path. It is a local, loopback-only differential lab for PHP 8.4.26 and 8.4.27. **It does not demonstrate information disclosure or remote code execution.**
 
-The multipart request bodies are 1,027,886 bytes (A1) and 520,552 bytes (B1). A1 places session upload progress ahead of many nested file fields and triggers a pre-script out-of-memory condition under a 128 MiB PHP memory limit. B1 places a synthetic `zend_string` header in a large form value. In our local PHP 8.4.26 build, B1 sent after A1 reaches stale session state and the server process crashes. B1 alone completes normally. The A1/B1 pair completes normally on PHP 8.4.27.
+The multipart request bodies are 355,594 bytes (A1) and 520,552 bytes (B1). A1 places session upload progress ahead of many nested file fields and triggers a pre-script out-of-memory condition under a 128 MiB PHP memory limit. B1 places a synthetic `zend_string` header in a large form value. In our local PHP 8.4.26 build, B1 sent after A1 reaches stale session state and the server process crashes. B1 alone completes normally. The A1/B1 pair completes normally on PHP 8.4.27.
 
 ## Reproduce
 
@@ -38,10 +38,12 @@ python3 repro.py --write-bodies ./out
 
 | Body | Size | SHA-256 |
 | --- | ---: | --- |
-| A1 | 1,027,886 bytes | `1690f6121ffad2ee2aed7d88d2df963f9b8940f3b8e584e57d3e16971e39efd0` |
+| A1 | 355,594 bytes | `a86ed7ef319f5303a259faeecc8addf11110184b4fc9171c520e891ab255fd68` |
 | B1 | 520,552 bytes | `2466c650a7139a28f564e5fdcc75050fec1ef855bd6e31df7a5d653e773db6fb` |
 
 The exact outcome can depend on allocator layout, build options, environment, and filesystem paths. A crash is evidence of reachability of the stale-state path in this configuration; it is not proof of a controlled read, write, or code execution. The 8.4.27 run is a version comparison, not a comprehensive security test.
+
+The initial A1 included large trailing form fields. They were never parsed because the memory failure occurs during the nested file controls. Removing them reduced A1 from 1,027,886 to 355,594 bytes without changing the differential result.
 
 ## Research context
 
