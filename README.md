@@ -45,6 +45,28 @@ The exact outcome can depend on allocator layout, build options, environment, an
 
 The initial A1 included large trailing form fields. They were never parsed because the memory failure occurs during the nested file controls. Removing them reduced A1 from 1,027,886 to 355,594 bytes without changing the differential result.
 
+## Second path: stale `BG(unserialize)`
+
+`chain_unserialize.py` reproduces a separate pre-RINIT session-decoder use-after-free on the same unmodified PHP builds. Every POST body is below 1 MiB; the script creates the session records through HTTP alone, without manually seeding files or requiring application code to call `session_start()`.
+
+```sh
+python3 chain_unserialize.py --php-vulnerable /path/to/php-8.4.26/sapi/cli/php \
+                             --php-fixed /path/to/php-8.4.27/sapi/cli/php
+```
+
+| Stage | Body size | Purpose | Observed on 8.4.26 |
+| --- | ---: | --- | --- |
+| Early A | 951,594 bytes | OOM leaves a 600,606-byte upload-progress session record | HTTP 500; worker survives |
+| GET | — | Normal request resets stale Session globals | HTTP 200 |
+| Early B | 951,594 bytes | Prepares a second session ID | HTTP 500; worker survives |
+| GET | — | Resets stale Session globals again | HTTP 200 |
+| Late | 433,103 bytes | OOM during pre-RINIT session decode | HTTP 500; worker survives |
+| Consumer | 693,097 bytes | Reuses the stale decoder context | Connection closes; worker exits on SIGSEGV (`-11`) |
+
+With PHP 8.4.27, every stage returns HTTP 200 and the worker survives. The consumer alone also returns HTTP 200 on a fresh 8.4.26 server. In an instrumented local build, the late OOM occurs in `ps_srlzr_decode_php()` while allocating the 600,016-byte session key; `BG(unserialize)` remains at level 1 with a pointer into freed request memory. The next request reuses that pointer before Basic RINIT and faults in `tmp_var()`. The repository's scripts do not need instrumentation to reproduce the version difference.
+
+This path demonstrates reuse of freed decoder state, **not a controlled memory disclosure, write, or RCE**. Its heap layout and reliability may change with PHP build options, extensions, paths, or server configuration.
+
 ## Research context
 
 The PHP project published advisories for [OOM corruption](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w) and [stale global state](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp). This experiment adapts the multipart heap-shaping approach from [9bie's PHP2Shell work](https://github.com/9bie/php2shell-bypass-aslr-exp) to the built-in CLI server and a body under 1 MiB. Other public CLI-server labs include [VKKKV/php2shell-test](https://github.com/VKKKV/php2shell-test), [RemiPelloux/php-session-upload-progress-uaf](https://github.com/RemiPelloux/php-session-upload-progress-uaf), and [allureluoli/php2shell-lab](https://github.com/allureluoli/php2shell-lab).
