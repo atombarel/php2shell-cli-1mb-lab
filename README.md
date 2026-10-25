@@ -1,6 +1,6 @@
-# PHP2Shell: sub-1 MiB PHP CLI server crash lab
+# PHP2Shell: sub-1 MiB PHP CLI server memory-disclosure lab
 
-This repository reproduces a two-request crash in PHP's built-in CLI web server using the session upload-progress path. It is a local, loopback-only differential lab for PHP 8.4.26 and 8.4.27. **It does not demonstrate information disclosure or remote code execution.**
+This repository reproduces stale session state in PHP's built-in CLI web server using the session upload-progress path. It is a local, loopback-only differential lab for PHP 8.4.26 and 8.4.27. The latest two-request chain demonstrates a controlled session cookie and out-of-bounds heap disclosure. **It does not demonstrate remote code execution.**
 
 The multipart request bodies are 355,594 bytes (A1) and 520,552 bytes (B1). A1 places session upload progress ahead of many nested file fields and triggers a pre-script out-of-memory condition under a 128 MiB PHP memory limit. B1 places a synthetic `zend_string` header in a large form value. In our local PHP 8.4.26 build, B1 sent after A1 reaches stale session state and the server process crashes. B1 alone completes normally. The A1/B1 pair completes normally on PHP 8.4.27.
 
@@ -78,8 +78,22 @@ python3 controlled_reclaim.py --php-vulnerable /path/to/php-8.4.26/sapi/cli/php 
 
 On the tested unmodified Ubuntu 24.04 build, the consumer alone returns HTTP 200; either complete 8.4.26 chain makes the worker exit on SIGSEGV. The 8.4.27 chain returns HTTP 200 at every stage. In a separate instrumented 8.4.26 build, allocation traces showed that a form value overlaps the stale `BG(unserialize)` context: its first words were `0x5959595959595959` for `Y` and `0x5a5a5a5a5a5a5a5a` for `Z`. That establishes input control over bytes at the freed address in this local layout. It does **not** establish a usable arbitrary read, arbitrary write, address leak, or RCE. Small differences in working directory or build layout can shift the reclaim by a page and change the outcome.
 
+## Controlled session cookie and heap disclosure
+
+`cookie_leak.py` uses a separate two-request chain. The first body (947,495 bytes) exhausts the configured 128 MiB PHP memory limit while the upload-progress session is sending a cookie before normal request initialization. The process returns HTTP 500 and survives with stale `PS(id)` and `PS(mod_data)` pointers. The second body (235,803 bytes) uses nested form fields to reclaim the old session ID's `zend_string` header. It supplies a valid header and a marker as the ID contents. Both bodies fit below 1 MiB.
+
+```sh
+python3 cookie_leak.py --php /path/to/php-8.4.26/sapi/cli/php --read-length 128
+python3 cookie_leak.py --php /path/to/php-8.4.26/sapi/cli/php --read-length 16000
+python3 cookie_leak.py --php /path/to/php-8.4.27/sapi/cli/php --read-length 128
+```
+
+Observed with an unmodified Ubuntu 24.04 build of PHP 8.4.26: the first request returns HTTP 500, the second HTTP 200, and the worker survives. Its `Set-Cookie` begins with `LABID0031`. With a forged length of 128, the decoded cookie contains 81 bytes beyond the end of the controlling form value. With a length of 16,000, it also contains pointer-shaped words that point into the same PHP heap region as the stale ID in an instrumented comparison build. PHP 8.4.27 returns HTTP 200 for both requests and a normal 32-byte session ID. The script binds only to `127.0.0.1` and makes no external requests.
+
+This establishes a usable local heap disclosure for this build and allocator layout. The OOM trigger and reclaim geometry may need adjustment for other build options, extensions, working directories, and memory limits. No arbitrary write or RCE has been shown.
+
 ## Research context
 
 The PHP project published advisories for [OOM corruption](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w) and [stale global state](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp). This experiment adapts the multipart heap-shaping approach from [9bie's PHP2Shell work](https://github.com/9bie/php2shell-bypass-aslr-exp) to the built-in CLI server and a body under 1 MiB. Other public CLI-server labs include [VKKKV/php2shell-test](https://github.com/VKKKV/php2shell-test), [RemiPelloux/php-session-upload-progress-uaf](https://github.com/RemiPelloux/php-session-upload-progress-uaf), and [allureluoli/php2shell-lab](https://github.com/allureluoli/php2shell-lab).
 
-The remaining research problem is to turn the controlled overlap into a useful memory disclosure or write that survives the server lifecycle. This repository does not claim that such a chain has been found.
+The remaining research problem is to turn the controlled overlap and disclosure into an arbitrary write or code execution. This repository does not claim that such a chain has been found.
