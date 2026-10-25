@@ -67,8 +67,19 @@ With PHP 8.4.27, every stage returns HTTP 200 and the worker survives. The consu
 
 This path demonstrates reuse of freed decoder state, **not a controlled memory disclosure, write, or RCE**. Its heap layout and reliability may change with PHP build options, extensions, paths, or server configuration.
 
+## Targeted reclaim of the freed context
+
+`controlled_reclaim.py` inserts 113 short form values before nested file control 568. Each value is 295 bytes, putting its `zend_string` allocation in ZendMM's 320-byte bin. The consumer body is 733,664 bytes. It runs two fresh-server chains, one with `Y` fill and one with `Z` fill, plus a consumer-alone control and a fixed-version comparison:
+
+```sh
+python3 controlled_reclaim.py --php-vulnerable /path/to/php-8.4.26/sapi/cli/php \
+                              --php-fixed /path/to/php-8.4.27/sapi/cli/php
+```
+
+On the tested unmodified Ubuntu 24.04 build, the consumer alone returns HTTP 200; either complete 8.4.26 chain makes the worker exit on SIGSEGV. The 8.4.27 chain returns HTTP 200 at every stage. In a separate instrumented 8.4.26 build, allocation traces showed that a form value overlaps the stale `BG(unserialize)` context: its first words were `0x5959595959595959` for `Y` and `0x5a5a5a5a5a5a5a5a` for `Z`. That establishes input control over bytes at the freed address in this local layout. It does **not** establish a usable arbitrary read, arbitrary write, address leak, or RCE. Small differences in working directory or build layout can shift the reclaim by a page and change the outcome.
+
 ## Research context
 
 The PHP project published advisories for [OOM corruption](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w) and [stale global state](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp). This experiment adapts the multipart heap-shaping approach from [9bie's PHP2Shell work](https://github.com/9bie/php2shell-bypass-aslr-exp) to the built-in CLI server and a body under 1 MiB. Other public CLI-server labs include [VKKKV/php2shell-test](https://github.com/VKKKV/php2shell-test), [RemiPelloux/php-session-upload-progress-uaf](https://github.com/RemiPelloux/php-session-upload-progress-uaf), and [allureluoli/php2shell-lab](https://github.com/allureluoli/php2shell-lab).
 
-The remaining research problem is to obtain a useful, reproducible memory disclosure or controlled primitive within this request-size budget and server lifecycle. This repository does not claim that such a chain has been found.
+The remaining research problem is to turn the controlled overlap into a useful memory disclosure or write that survives the server lifecycle. This repository does not claim that such a chain has been found.
